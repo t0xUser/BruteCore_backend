@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"io/ioutil"
+	"mime/multipart"
 	"net/http"
 	"slices"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"api.brutecore/libs/lib_db"
+	"github.com/gofiber/fiber/v2"
 )
 
 type ComboListLink struct {
@@ -129,7 +131,7 @@ func leftPad(s string, length int, padChar rune) string {
 	return strings.Repeat(string(padChar), length-len(s)) + s
 }
 
-func (r LISTRepositoryLayer) threadUpload(DatabaseId int64) {
+func (r LISTRepositoryLayer) threadUpload(DatabaseId int64, files map[int]*multipart.FileHeader) {
 	res, _ := r.db.QueryRow(lib_db.TxRead, QGetDatabaseLinks, DatabaseId)
 	for _, item := range *res {
 		id := item["id"].(int64)
@@ -144,6 +146,17 @@ func (r LISTRepositoryLayer) threadUpload(DatabaseId int64) {
 		)
 
 		switch link_type {
+		case "LT1":
+			s, err := files[int(id)].Open()
+			if err != nil {
+				r.db.Exec(lib_db.TxWrite, QUpdateDatabaseLinkStatus, "ST3", "Ошибка чтения мультипарта", DatabaseId, id)
+				continue
+			}
+			body, err = ioutil.ReadAll(s)
+			if err != nil {
+				r.db.Exec(lib_db.TxWrite, QUpdateDatabaseLinkStatus, "ST3", "Ошибка чтения мультипарта", DatabaseId, id)
+				continue
+			}
 		case "LT2":
 			body, err = ioutil.ReadFile(link)
 			if err != nil {
@@ -204,74 +217,128 @@ func (r LISTRepositoryLayer) threadUpload(DatabaseId int64) {
 	r.db.Exec(lib_db.TxWrite, QUpdateDatabase, DatabaseId, DatabaseId, DatabaseId)
 }
 
-func (r LISTRepositoryLayer) UploadComboList(resp *MComboListData) error {
-	if resp.Name == "" {
-		return errors.New("Укажите наименование файла/папки")
+func (r LISTRepositoryLayer) UploadComboListFormData(c *fiber.Ctx) (*string, error) {
+	name := c.FormValue("name")
+	p_id := c.FormValue("p_id")
+	ctype := c.FormValue("type")
+	data_type := c.FormValue("data_type")
+	id_types := c.FormValue("id_types")
+
+	if name == "" {
+		return nil, errors.New("Укажите наименование файла/папки")
 	}
 
-	if resp.Type != "CL1" && resp.Type != "CL2" {
-		return errors.New("Укажите тип элемента, который хотите записать")
-	}
-
-	if resp.P_ID != nil {
-		res, err := r.db.QueryRow(lib_db.TxRead, QGetDatabaseType, resp.P_ID)
+	if p_id != "" && p_id != "undefined" {
+		res, err := r.db.QueryRow(lib_db.TxRead, QGetDatabaseType, p_id)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		i := (*res)[0]["type"].(string)
 		if i != "CL1" {
-			return errors.New("Родителем может быть только папка")
+			return nil, errors.New("Родителем может быть только папка")
 		}
 	}
 
-	if resp.Type == "CL1" {
-		resp.DataType = nil
+	if ctype != "CL1" && ctype != "CL2" {
+		return nil, errors.New("Укажите тип элемента, который хотите записать")
 	}
 
-	if resp.Type == "CL2" {
-		if resp.DataType == nil || !slices.Contains([]string{"DT1", "DT2", "DT3", "DT4", "DT5", "DT6", "DT7", "DT8"}, *resp.DataType) {
-			return errors.New("Укажите тип данных файла")
+	var rid *string
+	if p_id != "" && p_id != "undefined" {
+		rid = &p_id
+	}
+
+	if ctype == "CL1" {
+		data_type = ""
+	}
+
+	m := make(map[string]interface{})
+	if ctype == "CL2" {
+		if data_type == "" || !slices.Contains([]string{"DT1", "DT2", "DT3", "DT4", "DT5", "DT6", "DT7", "DT8"}, data_type) {
+			return nil, errors.New("Укажите тип данных файла")
 		}
 
-		if len(resp.Links) < 1 {
-			return errors.New("Укажите ссылки для загрузки")
+		if id_types == "" {
+			return nil, errors.New("Укажите источники")
 		}
 
-		for _, item := range resp.Links {
-			if !slices.Contains([]string{"LT1", "LT2", "LT3"}, item.LinkType) || len(item.LinkPath) < 3 {
-				return errors.New("Перепроверьте указанные источники")
+		pairs := strings.Split(id_types, ";")
+		for _, val := range pairs {
+			k := strings.Split(val, ":")
+			if len(k) != 2 {
+				continue
+			}
+
+			if !slices.Contains([]string{"LT1", "LT2", "LT3"}, k[1]) {
+				return nil, errors.New("Перепроверьте указанные источники")
+			}
+
+			if k[1] == "LT1" {
+				file, err := c.FormFile("sid:" + k[0] + ";type:" + k[1] + ";")
+				if err != nil {
+					return nil, errors.New("Файл источник не загружен")
+				}
+				m[val] = file
+			} else {
+				link := c.FormValue("sid:" + k[0] + ";type:" + k[1] + ";")
+				if len(link) < 3 {
+					return nil, errors.New("Перепроверьте указанные источники")
+				}
+				m[val] = link
 			}
 		}
 	}
 
 	tx, err := r.db.StartTx(lib_db.TxWrite)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	var rdata_type *string
+	if data_type != "" {
+		rdata_type = &data_type
 	}
 
 	trueTx := tx.(*sql.Tx)
-	res, err := trueTx.Exec(QInsertDatabase, resp.Name, resp.P_ID, resp.Type, resp.DataType, "ST1")
+	res, err := trueTx.Exec(QInsertDatabase, name, rid, ctype, rdata_type, "ST1")
 	if err != nil {
 		trueTx.Rollback()
-		return err
+		return nil, err
 	}
-	resp.ID, _ = res.LastInsertId()
-	resp.CreateTime = time.Now()
 
-	for i, item := range resp.Links {
-		_, err = trueTx.Exec(QInsertDatabaseLink, resp.ID, i+1, item.LinkPath, "ST1", item.LinkType)
+	id, _ := res.LastInsertId()
+	i := 0
+	m2 := make(map[int]*multipart.FileHeader)
+	for key, value := range m {
+		i++
+		path := ""
+
+		f := strings.Split(key, ":")
+		if len(f) != 2 {
+			continue
+		}
+
+		if f[1] == "LT1" {
+			path = value.(*multipart.FileHeader).Filename
+			m2[i] = value.(*multipart.FileHeader)
+		} else {
+			path = value.(string)
+		}
+
+		_, err = trueTx.Exec(QInsertDatabaseLink, id, i, path, "ST1", f[1])
 		if err != nil {
 			trueTx.Rollback()
-			return err
+			return nil, err
 		}
 	}
 
 	err = trueTx.Commit()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	go r.threadUpload(resp.ID)
-	return nil
+	strId := strconv.FormatInt(id, 10)
+	go r.threadUpload(id, m2)
+	return &strId, nil
 }

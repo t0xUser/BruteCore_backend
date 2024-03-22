@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"regexp"
 	"runtime"
-	"strconv"
 	"sync"
 	"time"
 
@@ -19,7 +18,6 @@ type Proxy struct {
 	db         *lib_db.DB
 	buffer     []ProxyRecord
 	interval   int64
-	timeout    int
 	update     bool
 	lastGetter int
 	links      []links
@@ -55,14 +53,6 @@ func NewProxy(d *lib_db.DB, proxy_id int64, session_id int64) (*Proxy, error) {
 
 	switch prox.id {
 	case -2:
-		if res, err = d.QueryRow(lib_db.TxRead, QGetSessionProxyDTL, session_id); err != nil {
-			return nil, err
-		}
-		if res.Count() != 1 {
-			return nil, errors.New("Таймаут прокси не был указан вручную")
-		}
-		prox.timeout, _ = strconv.Atoi((*res)[0]["value"].(string))
-
 		if res, err = d.QueryRow(lib_db.TxRead, QGetSessionProxys, session_id); err != nil {
 			return nil, err
 		}
@@ -84,7 +74,6 @@ func NewProxy(d *lib_db.DB, proxy_id int64, session_id int64) (*Proxy, error) {
 		}
 
 		prox.interval = (*res)[0]["interval"].(int64)
-		prox.timeout = int((*res)[0]["timeout"].(int64))
 		prox.update = ((*res)[0]["use_update"].(int64) == 1)
 		for _, i := range *res {
 			prox.links = append(prox.links, links{
@@ -179,7 +168,7 @@ func (p *Proxy) ProxyWorker() {
 	}
 }
 
-func (p *Proxy) GiveProxy() *ProxyRecord {
+func (p *Proxy) GiveProxy() ProxyRecord {
 	p.mup.Lock()
 	defer p.mup.Unlock()
 
@@ -187,5 +176,5 @@ func (p *Proxy) GiveProxy() *ProxyRecord {
 		p.lastGetter = -1
 	}
 	p.lastGetter++
-	return &p.buffer[p.lastGetter]
+	return p.buffer[p.lastGetter]
 }

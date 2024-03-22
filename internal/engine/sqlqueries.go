@@ -2,22 +2,21 @@ package engine
 
 const (
 	QUpdateProtocolSessionDataGood = `
-		UPDATE SESSION_DATA_PROTOCOL SET DATA_STATUS = '%s' WHERE SESSION_ID = %d AND DATA_CON_ID = '%s';
+		UPDATE SESSION_DATA_PROTOCOL SET DATA_STATUS = '%s' WHERE SESSION_ID = %d AND ID = %d;
 		UPDATE SESSION_DATA_PROTOCOL SET DATA_STATUS = 'RT2' WHERE SESSION_ID = %d AND H_DATA = '%s' AND DATA_STATUS IS NULL;
 	`
 
 	QUpdateProtocolSessionDataAny = `
-		UPDATE SESSION_DATA_PROTOCOL SET DATA_STATUS = '%s' WHERE SESSION_ID = %d AND DATA_CON_ID = '%s';
+		UPDATE SESSION_DATA_PROTOCOL SET DATA_STATUS = '%s' WHERE SESSION_ID = %d AND ID = %d;
 	`
 
-	QInsertSessionData = `
-		INSERT INTO SESSION_DATA(SESSION_ID, DATABASE_ID, DATABASE_LINK, DATABASE_DATA, DATA_STATUS, DATABASE_CON_ID)
-		VALUES (%d, %d, %d, %d, "%s", "%s");
+	QUpdateSessionWebApi = `
+		UPDATE SESSION_DATA_WEBAPI SET DATA_STATUS = '%s' WHERE SESSION_ID = %d AND ID = %d;
 	`
 
 	QInsertSessionDataLog = `
-		INSERT INTO SESSION_DATA_LOG(SESSION_ID, CON_ID, LOG)
-		VALUES(%d, "%s", "%s");
+		INSERT INTO SESSION_DATA_LOG(SESSION_ID, ID, LOG)
+		VALUES(%d, %d, '%s');
 	`
 
 	QUpdateErrorStat = `
@@ -35,47 +34,28 @@ const (
 
 	QGetComboListBatch = `
 		SELECT 
-			DLD.ID, DLD.DATABASE_LINK, DLD.DATA, DLD.CON_ID, '' login, '' password 
-		FROM DATABASE_LINK_DATA DLD
-		WHERE DLD.DATABASE_ID = $1 AND DLD.CON_ID > $2 LIMIT $3
+			id id, data data, '' login, '' password 
+		FROM SESSION_DATA_WEBAPI
+		WHERE SESSION_ID = $1 AND ID > $2 LIMIT $3
 	`
 
 	QGetComboListProtocolBatch = `
 		SELECT 
-			id, -1 database_link, h_data data, u_data login, p_data password, data_con_id con_id
+			id id, h_data data, u_data login, p_data password, data_con_id con_id
 		FROM session_data_protocol
-		WHERE session_id = $1 AND DATA_CON_ID > $2 LIMIT $3
+		WHERE SESSION_ID = $1 AND ID > $2 LIMIT $3
 	`
 
-	QGetMaxConId            = "SELECT COALESCE(MAX(DATABASE_CON_ID), '') M FROM SESSION_DATA WHERE SESSION_ID = $1"
 	QGetComboListBatchStart = `
-		SELECT 
-			ID, DATABASE_LINK, DATA, CON_ID, '' login, '' password 
-		FROM (
-			SELECT CON_ID C, DATABASE_ID D FROM DATABASE_LINK_DATA
-			WHERE DATABASE_ID = $1 AND CON_ID < $2
-			EXCEPT 
-			SELECT DATABASE_CON_ID C, DATABASE_ID D FROM SESSION_DATA
-			WHERE SESSION_ID = $3
-		) A
-		INNER JOIN DATABASE_LINK_DATA DLD ON DLD.DATABASE_ID = A.D AND DLD.CON_ID = A.C
-
-		UNION
-
-		SELECT 
-			ID, DATABASE_LINK, DATA, CON_ID, '' login, '' password 
-		FROM (
-			SELECT 
-				DLD.ID, DLD.DATABASE_LINK, DLD.DATA, DLD.CON_ID
-			FROM DATABASE_LINK_DATA DLD
-			WHERE DLD.DATABASE_ID = $4 AND DLD.CON_ID > $5
-			LIMIT $6
-		)	
+		SELECT id id, data data, '' login, '' password
+		FROM SESSION_DATA_WEBAPI
+		WHERE SESSION_ID = $1 AND DATA_STATUS IS NULL
+		LIMIT $2
 	`
 
 	QGetComboListProtocolBatchStart = `
 		SELECT 
-			id, -1 database_link, h_data data, u_data login, p_data password, data_con_id con_id 
+			id id, h_data data, u_data login, p_data password 
 		FROM SESSION_DATA_PROTOCOL SDP
 		WHERE SDP.SESSION_ID = $1 AND SDP.DATA_STATUS IS NULL
 		LIMIT $2
@@ -98,6 +78,7 @@ const (
 	QGetAllAliveSessions = `
 	SELECT 
 		ID ID, STATUS S, WORKER_COUNT W,
+		timeout,
 		COALESCE(DATABASE_ID, -1) DATABASE_ID, 
 		COALESCE(MODULE_ID,   -1) MODULE_ID, 
 		COALESCE(PROXY_ID,    -1) PROXY_ID,
@@ -113,31 +94,36 @@ const (
 
 	QInsertProtocolLines = `
 		INSERT INTO SESSION_DATA_PROTOCOL(SESSION_ID, ID, H_ID, H_DATA, U_ID, U_DATA, P_ID, P_DATA, DATA_CON_ID)
-		WITH 
+		WITH
+			F AS (
+				SELECT "TYPE", DATA
+				FROM SESSION_COMBOLIST_TMP WHERE SESSION_ID = $1
+			),
 			H AS (
 				SELECT ROW_NUMBER() OVER (ORDER BY 1) AS ID, DATA 
-				FROM DATABASE_LINK_DATA WHERE DATABASE_ID = $1
+				FROM F WHERE "TYPE" = 'DATABASE_ID' 
 			),
 			U AS (
 				SELECT ROW_NUMBER() OVER (ORDER BY 1) AS ID, DATA 
-				FROM DATABASE_LINK_DATA WHERE DATABASE_ID = $2
+				FROM F WHERE "TYPE" = 'USERNAME_ID'
 			),
 			P AS (
 				SELECT ROW_NUMBER() OVER (ORDER BY 1) AS ID, DATA 
-				FROM DATABASE_LINK_DATA WHERE DATABASE_ID = $3
+				FROM F WHERE "TYPE" = 'PASSWORD_ID'
 			)
 		SELECT
-			$4, ROW_NUMBER() OVER (ORDER BY 1), 
+			$2, ROW_NUMBER() OVER (ORDER BY 1), 
 			H.ID, H.DATA, U.ID, U.DATA, P.ID, P.DATA,
 			substr('0000000' || H.ID, -7, 7)||substr('000000' || U.ID, -6, 6)||substr('000000' || P.ID, -6, 6)
 		FROM H
 		JOIN U
-		JOIN P
+		JOIN P;
+		DELETE FROM SESSION_COMBOLIST_TMP WHERE SESSION_ID = $3;
 	`
 
 	QGetProxyInfo = `
 		SELECT 
-			P.INTERVAL, P.TIMEOUT, P.USE_UPDATE, 
+			P.INTERVAL, P.USE_UPDATE, 
 			PL.ID, PL.LINK, PL.LINK_TYPE, PL.PROXY_TYPE 
 		FROM PROXY P 
 		INNER JOIN PROXY_LINK PL ON P.ID = PL.PROXY_ID
@@ -145,11 +131,6 @@ const (
 	`
 
 	QGetSessionProxys = "SELECT * FROM SESSION_PROXY WHERE SESSION_ID = $1"
-
-	QGetSessionProxyDTL = `
-		SELECT * FROM SESSION_DTL SD
-		WHERE SD.SESSION_ID = $1 AND SD.KEY = 'P1T'
-	`
 
 	QSetSessionError = `
 		UPDATE SESSION SET

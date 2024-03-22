@@ -14,13 +14,10 @@ type Worker struct {
 }
 
 type ComboListRecord struct {
-	id            int64
-	database_id   int64
-	database_link int64
-	data          string
-	login         string
-	password      string
-	con_id        string
+	id       int64
+	data     string
+	login    string
+	password string
 }
 
 func NewWorker(t int, i *Session) *Worker {
@@ -50,23 +47,24 @@ func (w *Worker) execute() {
 				)
 
 				if w.inst.proxy.id != -1 {
-					prox = w.inst.proxy.GiveProxy()
+					gprox := w.inst.proxy.GiveProxy()
+					prox = &gprox
 				}
 
 				runtime.Gosched()
-				status, log = w.inst.module.ExecuteModule(line, prox, w.inst.proxy.timeout, w.inst.database.data_type)
+				status, log = w.inst.module.ExecuteModule(line, prox, w.inst.timeout, w.inst.database.data_type)
 				if status != "RT3" {
 					if w.inst.database.data_type != "MT2" {
-						w.inst.setToQueue(fmt.Sprintf(QInsertSessionData, w.inst.id, w.inst.database.id, line.database_link, line.id, status, line.con_id))
+						w.inst.setToQueue(fmt.Sprintf(QUpdateSessionWebApi, status, w.inst.id, line.id))
 					} else {
 						if slices.Contains([]string{"RT1", "RT6", "RT7"}, status) {
-							w.inst.setToQueue(fmt.Sprintf(QUpdateProtocolSessionDataGood, status, w.inst.id, line.con_id, w.inst.id, line.data))
+							w.inst.setToQueue(fmt.Sprintf(QUpdateProtocolSessionDataGood, status, w.inst.id, line.id, w.inst.id, line.data))
 						} else {
-							w.inst.setToQueue(fmt.Sprintf(QUpdateProtocolSessionDataAny, status, w.inst.id, line.con_id))
+							w.inst.setToQueue(fmt.Sprintf(QUpdateProtocolSessionDataAny, status, w.inst.id, line.id))
 						}
 					}
 					if log != nil {
-						w.inst.setToQueue(fmt.Sprintf(QInsertSessionDataLog, w.inst.id, line.con_id, *log))
+						w.inst.setToQueue(fmt.Sprintf(QInsertSessionDataLog, w.inst.id, line.id, *log))
 					}
 				} else {
 					w.inst.setToQueue(fmt.Sprintf(QUpdateErrorStat, w.inst.id))

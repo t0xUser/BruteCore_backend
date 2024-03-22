@@ -49,6 +49,15 @@ func (r *MODLRepositoryLayer) DeleteModule(sID string) error {
 		return err
 	}
 
+	res, err = r.db.QueryRow(lib_db.TxRead, "SELECT * FROM SESSION S WHERE S.MODULE_ID = $1", id)
+	if err != nil {
+		return err
+	}
+
+	if res.Count() > 0 {
+		return errors.New("Нельзя удалить модуль пока есть связанные с нима сессии")
+	}
+
 	_, err = r.db.Exec(lib_db.TxWrite, "DELETE FROM MODULE WHERE ID = $1; DELETE FROM MODULE_INPUT WHERE ID = $2;", id, id)
 	return err
 }

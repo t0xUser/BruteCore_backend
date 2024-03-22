@@ -2,7 +2,6 @@ package handler
 
 import (
 	eg "api.brutecore/internal/engine"
-	"api.brutecore/internal/utility"
 
 	"api.brutecore/libs/lib_db"
 	"api.brutecore/libs/lib_env"
@@ -13,6 +12,7 @@ import (
 
 type Handler struct {
 	conf     *lib_env.Config
+	db       *lib_db.DB
 	authIntr *AUTHLayer
 	listIntr *LISTLayer
 	proxIntr *PROXLayer
@@ -23,22 +23,13 @@ type Handler struct {
 func New(cf *lib_env.Config, dbs *lib_db.DB, jwt *lib_jwt.TJWT, pl *eg.Pulling) *Handler {
 	return &Handler{
 		conf:     cf,
+		db:       dbs,
 		authIntr: NewAUTHLayer(cf, jwt),
 		listIntr: NewLISTLayer(dbs),
 		proxIntr: NewPROXLayer(dbs),
 		sessIntr: NewSESSLayer(dbs, pl),
 		modlIntr: NewMODLLayer(dbs),
 	}
-}
-
-func (h *Handler) Health(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"success": true,
-		"status":  "alive",
-		"ram":     utility.GetRAMUsage(),
-		"cpu":     utility.GetCPUUsage(),
-		"disk":    utility.GetDiskUsage(),
-	})
 }
 
 func (h *Handler) SetAuthHandlers(app *fiber.App) {
@@ -97,6 +88,7 @@ func (h *Handler) SetSessionHandlers(app *fiber.App) {
 	sess.Post("/AlterSession", h.sessIntr.AlterSession)
 	sess.Post("/ApplyInputFields", h.sessIntr.ApplyInputFields)
 	sess.Post("/UploadProxy", h.sessIntr.UploadProxy)
+	sess.Post("/UploadComboList", h.sessIntr.UploadComboList)
 }
 
 func (h *Handler) SetSessionDownloadHandlers(app *fiber.App) {
@@ -104,16 +96,20 @@ func (h *Handler) SetSessionDownloadHandlers(app *fiber.App) {
 	dwnl := app.Group(h.conf.Http.Group + "/dwnl")
 	dwnl.Use(h.authIntr.CheckTokenMiddlewareQuery)
 	dwnl.Use(h.authIntr.CheckAdminRoleQuery)
-	dwnl.Get("/DownloadSelected", h.sessIntr.DownloadUniversal)
-	dwnl.Get("/DownloadAll", h.sessIntr.DownloadUniversal)
+	dwnl.Get("/DownloadSelected", h.sessIntr.DownloadUniversal) //??
+	dwnl.Get("/DownloadAll", h.sessIntr.DownloadUniversal) //??
+}
+
+func (h *Handler) SetCommon(app *fiber.App) {
+	/*-------- Common Endpoints --------*/
+	app.Get("/Health", h.Health)
+	app.Get("/Reference", h.GetReference)
+	app.Get("/Info", h.GetInfo)
+	app.Get("/Dashboard", h.DashBoard)
 }
 
 func (h *Handler) SetHandlers(app *fiber.App) {
-	app.Get("/Health", h.Health)
-	app.Get("/Dashboard", func(c *fiber.Ctx) error {
-		return c.Redirect("/", fiber.StatusMovedPermanently)
-	})
-
+	h.SetCommon(app)
 	h.SetAuthHandlers(app)
 	h.SetComboListHandlers(app)
 	h.SetProxyPresetHandlers(app)

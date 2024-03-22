@@ -118,7 +118,7 @@ func (m *Module) CheckRunningProccess() {
 	}
 }
 
-func (m *Module) ExecuteModule(c *ComboListRecord, p *ProxyRecord, timeout int, data_type string) (string, *string) {
+func (m *Module) ExecuteModule(c *ComboListRecord, p *ProxyRecord, timeout int64, data_type string) (string, *string) {
 	strct := make(map[string]interface{})
 	strct["timeout"] = timeout
 

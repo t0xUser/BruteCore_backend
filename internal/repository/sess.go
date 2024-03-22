@@ -1,19 +1,22 @@
 package repository
 
 import (
+	"bufio"
 	"bytes"
 	"database/sql"
-	"encoding/base64"
 	"errors"
+	"io/ioutil"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	eg "api.brutecore/internal/engine"
 	"api.brutecore/internal/utility"
 
 	"api.brutecore/libs/lib_db"
+	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/tealeg/xlsx"
 )
@@ -27,13 +30,6 @@ type AlterSess struct {
 	ID       *int64      `json:"id"`
 	Field    string      `json:"field"`
 	NewValue interface{} `json:"new_value"`
-}
-
-type MUploadProxy struct {
-	SessionID int64  `json:"session_id"`
-	ProxyType string `json:"proxy_type"`
-	TimeOut   int    `json:"timeout"`
-	Data      string `json:"data"`
 }
 
 type AlterInputFields struct {
@@ -88,20 +84,24 @@ func (r *SESSRepositoryLayer) ApplyInputFields(sID string, dat AlterInputFields)
 			query  string
 			iInt   int64
 		)
-		switch v.Type {
-		case "IT1", "IT3":
-			if len(v.Value.(string)) > 59 {
-				err = errors.New(`Поле "` + v.Description + `" превышает максимальную длину в 60 символов`)
-			}
-		case "IT2":
-			if iFloat, ok := v.Value.(float64); ok {
-				v.Value = int64(iFloat)
-			} else if iInt, ok = v.Value.(int64); ok {
-				v.Value = iInt
-			} else {
-				val, ok := v.Value.(string)
-				if (!ok) || (ok && val != "") {
-					err = errors.New(`Значение поля "` + v.Description + `" не является числом`)
+
+		if v.Value != nil {
+			switch v.Type {
+			case "IT1", "IT3":
+				if len(v.Value.(string)) > 59 {
+					err = errors.New(`Поле "` + v.Description + `" превышает максимальную длину в 60 символов`)
+				}
+
+			case "IT2":
+				if iFloat, ok := v.Value.(float64); ok {
+					v.Value = int64(iFloat)
+				} else if iInt, ok = v.Value.(int64); ok {
+					v.Value = iInt
+				} else {
+					val, ok := v.Value.(string)
+					if (!ok) || (ok && val != "") {
+						err = errors.New(`Значение поля "` + v.Description + `" не является числом`)
+					}
 				}
 			}
 		}
@@ -175,6 +175,10 @@ func (r *SESSRepositoryLayer) GetInfoSession(sID string) (*lib_db.DBResult, erro
 		return nil, err
 	}
 
+	if res.Count() == 0 {
+		return nil, errors.New("Session not found")
+	}
+
 	res2, err := r.db.QueryRow(lib_db.TxRead, QSessionInfoInput, id, (*res)[0]["module_id"].(int64))
 	if err != nil {
 		return nil, err
@@ -189,31 +193,44 @@ func (r *SESSRepositoryLayer) GetInfoSession(sID string) (*lib_db.DBResult, erro
 	return res, nil
 }
 
-func (r *SESSRepositoryLayer) UploadProxy(resp *MUploadProxy) error {
-	if resp.TimeOut == 0 {
-		return errors.New("Укажите таймаут")
-	}
-
-	if !slices.Contains([]string{"PT1", "PT2", "PT3"}, resp.ProxyType) {
+func (r *SESSRepositoryLayer) UploadProxyFormData(c *fiber.Ctx) error {
+	proxy_type := c.FormValue("proxy_type")
+	if !slices.Contains([]string{"PT1", "PT2", "PT3"}, proxy_type) {
 		return errors.New("Тип проси указан некорректно")
 	}
 
-	decodedBytes, err := base64.StdEncoding.DecodeString(resp.Data)
-	if err != nil {
-		return errors.New("Ошибка декодирования данных")
+	session_id := c.FormValue("session_id")
+	if session_id == "" {
+		return errors.New("session_id is undefined")
 	}
-	decodedString := string(decodedBytes)
-	lines := strings.Split(decodedString, "\n")
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return err
+	}
+
+	s, err := file.Open()
+	if err != nil {
+		return err
+	}
+
+	body, err := ioutil.ReadAll(s)
+	if err != nil {
+		return err
+	}
+
 	tx, err := r.db.StartTx(lib_db.TxWrite)
 	if err != nil {
 		return err
 	}
+
 	trueTx := tx.(*sql.Tx)
-	trueTx.Exec("DELETE FROM SESSION_PROXY WHERE SESSION_ID = $1", resp.SessionID)
-	trueTx.Exec(QInsertSessionDTLTimeOut, resp.SessionID, "P1T", resp.TimeOut, "Таймаут прокси")
-	for _, line := range lines {
+	trueTx.Exec("DELETE FROM SESSION_PROXY WHERE SESSION_ID = $1", session_id)
+	bodyReader := bytes.NewReader(body)
+	scanner := bufio.NewScanner(bodyReader)
+	for scanner.Scan() {
 		var port int
-		dline := strings.Split(line, ":")
+		dline := strings.Split(scanner.Text(), ":")
 		if dline[0] == "" {
 			continue
 		}
@@ -221,10 +238,11 @@ func (r *SESSRepositoryLayer) UploadProxy(resp *MUploadProxy) error {
 		if port, err = strconv.Atoi(strings.ReplaceAll(dline[1], "\r", "")); err != nil {
 			continue
 		}
-		trueTx.Exec(QInsertSessionProxy, resp.SessionID, dline[0], port, resp.ProxyType)
+
+		trueTx.Exec(QInsertSessionProxy, session_id, dline[0], port, proxy_type)
 	}
 
-	trueTx.Exec("UPDATE SESSION SET PROXY_ID = -2 WHERE ID = $1", resp.SessionID)
+	trueTx.Exec("UPDATE SESSION SET PROXY_ID = -2 WHERE ID = $1", session_id)
 
 	err = trueTx.Commit()
 	if err != nil {
@@ -235,6 +253,108 @@ func (r *SESSRepositoryLayer) UploadProxy(resp *MUploadProxy) error {
 	return nil
 }
 
+func (r *SESSRepositoryLayer) UploadComboListFormData(c *fiber.Ctx) error {
+	session_id := c.FormValue("session_id")
+	if session_id == "" {
+		return errors.New("session_id не указан")
+	}
+
+	combo_type := c.FormValue("combo_type")
+	if combo_type == "" {
+		return errors.New("combo_type не указан")
+	}
+
+	data_type := c.FormValue("data_type")
+	if data_type == "" {
+		return errors.New("data_type не указан")
+	}
+
+	if data_type == "" || !slices.Contains([]string{"DT1", "DT2", "DT3", "DT4", "DT5", "DT6", "DT7", "DT8"}, data_type) {
+		return errors.New("Укажите тип данных файла")
+	}
+
+	res, err := r.db.QueryRow(lib_db.TxRead, QGetSession, session_id)
+	if err != nil {
+		return err
+	}
+
+	module_type := (*res)[0]["type"].(string)
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return err
+	}
+
+	s, err := file.Open()
+	if err != nil {
+		return err
+	}
+
+	body, err := ioutil.ReadAll(s)
+	if err != nil {
+		return err
+	}
+
+	tx, err := r.db.StartTx(lib_db.TxWrite)
+	if err != nil {
+		return err
+	}
+
+	trueTx := tx.(*sql.Tx)
+	bodyReader := bytes.NewReader(body)
+	scanner := bufio.NewScanner(bodyReader)
+
+	if module_type == "MT1" {
+		trueTx.Exec("DELETE FROM SESSION_DATA_WEBAPI WHERE SESSION_ID = $1;", session_id)
+		I := 0
+		for scanner.Scan() {
+			I++
+			trueTx.Exec(`
+				INSERT INTO SESSION_DATA_WEBAPI
+				VALUES($1, $2, $3, NULL);
+			`, session_id, I, scanner.Text())
+		}
+	} else {
+		trueTx.Exec(QDeleteTempCombolist, session_id, combo_type)
+
+		var vtype string
+		switch combo_type {
+		case "0":
+			vtype = "DATABASE_ID"
+		case "1":
+			vtype = "USERNAME_ID"
+		case "2":
+			vtype = "PASSWORD_ID"
+		}
+
+		for scanner.Scan() {
+			trueTx.Exec(QInsertTempCombolist, session_id, vtype, scanner.Text())
+		}
+
+		trueTx.Exec(`
+		DELETE FROM SESSION_DTL WHERE SESSION_ID = $1 AND KEY = $2;
+		INSERT INTO SESSION_DTL VALUES($3, $4, (SELECT COUNT(1) FROM SESSION_COMBOLIST_TMP WHERE SESSION_ID = $5 AND "TYPE" = $6), '-')
+		`, session_id, vtype, session_id, vtype, session_id, vtype)
+
+	}
+
+	if err := scanner.Err(); err != nil {
+		trueTx.Rollback()
+		return err
+	}
+
+	switch combo_type {
+	case "0":
+		trueTx.Exec("UPDATE SESSION SET database_id = -2 WHERE ID = $1", session_id)
+	case "1":
+		trueTx.Exec("UPDATE SESSION SET username_ID = -2 WHERE ID = $1", session_id)
+	case "2":
+		trueTx.Exec("UPDATE SESSION SET password_ID = -2 WHERE ID = $1", session_id)
+	}
+
+	return trueTx.Commit()
+}
+
 func (r *SESSRepositoryLayer) AlterSession(s *AlterSess) error {
 	if s.ID == nil {
 		return errors.New("Укажите ID сессии")
@@ -243,13 +363,54 @@ func (r *SESSRepositoryLayer) AlterSession(s *AlterSess) error {
 	if s.Field == "" {
 		return errors.New("Укажите поле для изменения")
 	}
+	s.Field = strings.ToUpper(s.Field)
 
 	if s.NewValue == nil {
 		return errors.New("Укажите новое значение")
 	}
 
-	switch strings.ToUpper(s.Field) {
-	case "DATABASE_ID", "USERNAME_ID", "PASSWORD_ID":
+	res, err := r.db.QueryRow(lib_db.TxRead, QGetSession, *s.ID)
+	if err != nil {
+		return err
+	}
+
+	module_type := (*res)[0]["type"].(string)
+	session_status := (*res)[0]["status"].(string)
+
+	if session_status == "ST6" {
+		return errors.New("Нельзя проводить никаких изменений с завершенной сессией")
+	}
+
+	if s.Field == "STATUS" && s.NewValue == "ST7" && session_status != "ST5" {
+		return errors.New("Нельзя остановить не запущенную сессию")
+	}
+
+	if s.Field == "STATUS" && s.NewValue == "ST5" {
+		if err := r.StartSession(*s.ID); err != nil {
+			return err
+		}
+	}
+
+	if session_status == "ST5" && slices.Contains([]string{
+		"DATABASE_ID", "USERNAME_ID", "PASSWORD_ID",
+		"PROXY_ID",
+	}, s.Field) {
+		return errors.New("Нельзя менять данное поле при активной сессии")
+	}
+
+	if s.Field == "WORKER_COUNT" && (s.NewValue.(float64) > 2000 || s.NewValue.(float64) < 1) {
+		return errors.New("Недопустимое значение")
+	}
+
+	if s.Field == "TIMEOUT" && (s.NewValue.(float64) > 180000 || s.NewValue.(float64) < 1000) {
+		return errors.New("Недопустимое значение")
+	}
+
+	if s.Field == "NAME" && len(s.NewValue.(string)) > 60 {
+		return errors.New("Длина поля превышает максимальную длину")
+	}
+
+	if slices.Contains([]string{"DATABASE_ID", "USERNAME_ID", "PASSWORD_ID"}, s.Field) {
 		res, err := r.db.QueryRow(lib_db.TxRead, QGetDatabaseType, s.NewValue)
 		if err != nil {
 			return err
@@ -258,30 +419,42 @@ func (r *SESSRepositoryLayer) AlterSession(s *AlterSess) error {
 		if (*res)[0]["type"].(string) != "CL2" {
 			return errors.New("Можно выбирать только комболист")
 		}
-
-	case "PROXY_ID":
-	case "MODULE_ID":
-	case "STATUS":
-		if s.NewValue == "ST5" {
-			if err := r.StartSession(*s.ID); err != nil {
-				return err
-			}
-		}
-
-	case "NAME":
-		if len(s.NewValue.(string)) > 60 {
-			return errors.New("Длина поля превышает максимальную длину")
-		}
-
-	case "WORKER_COUNT":
-		if s.NewValue.(float64) > 2000 || s.NewValue.(float64) < 1 {
-			return errors.New("Недопустимое значение")
-		}
-	default:
-		return errors.New("Неопознанное поле для изменения")
 	}
 
-	_, err := r.db.Exec(lib_db.TxWrite, `UPDATE "session" SET `+s.Field+` = $1 WHERE ID = $2`, s.NewValue, *s.ID)
+	if module_type == "MT1" && s.Field == "DATABASE_ID" {
+
+		_, err = r.db.Exec(lib_db.TxWrite, `
+			DELETE FROM SESSION_DATA_WEBAPI WHERE SESSION_ID = $1;
+			INSERT INTO SESSION_DATA_WEBAPI
+			SELECT 
+				$2, ROW_NUMBER() OVER(PARTITION BY 1 ORDER BY 1) AS id, data, null
+			FROM DATABASE_LINK_DATA
+			WHERE DATABASE_ID = $3;
+			UPDATE SESSION SET DATABASE_ID = $4 WHERE ID = $5;
+		`, *s.ID, *s.ID, s.NewValue.(float64), s.NewValue.(float64), *s.ID)
+
+		return err
+	}
+
+	if module_type == "MT2" && slices.Contains([]string{"DATABASE_ID", "USERNAME_ID", "PASSWORD_ID"}, s.Field) {
+
+		_, err = r.db.Exec(lib_db.TxWrite, `
+			DELETE FROM SESSION_COMBOLIST_TMP WHERE SESSION_ID = $1 AND "TYPE" = $2;
+			INSERT INTO SESSION_COMBOLIST_TMP
+			SELECT $3, $4, data
+			FROM DATABASE_LINK_DATA
+			WHERE DATABASE_ID = $5;
+			UPDATE SESSION SET `+s.Field+` = $6 WHERE ID = $7;
+			DELETE FROM SESSION_DTL WHERE SESSION_ID = $8 AND KEY = $9;
+			INSERT INTO SESSION_DTL VALUES($10, $11, (SELECT COUNT(1) FROM SESSION_COMBOLIST_TMP WHERE SESSION_ID = $12 AND "TYPE" = $13), '-')
+		`,
+			*s.ID, s.Field, *s.ID, s.Field, s.NewValue.(float64), s.NewValue.(float64),
+			*s.ID, *s.ID, s.Field, *s.ID, s.Field, *s.ID, s.Field)
+
+		return err
+	}
+
+	_, err = r.db.Exec(lib_db.TxWrite, `UPDATE "session" SET `+s.Field+` = $1 WHERE ID = $2`, s.NewValue, *s.ID)
 	if strings.ToUpper(s.Field) == "STATUS" {
 		r.p.Iteration()
 	}
@@ -307,44 +480,78 @@ func (r *SESSRepositoryLayer) StartSession(sessionId int64) error {
 		return errors.New("Укажите модуль для перебора")
 	}
 
+	if (*res)[0]["module_type"].(string) == "MT2" {
+		res2, err := r.db.QueryRow(lib_db.TxRead, QCheckExists, sessionId)
+		if err != nil {
+			return err
+		}
+
+		if res2.Count() == 0 {
+			return errors.New("Произошла внетрення ошибка")
+		}
+
+		H_COUNT := (*res2)[0]["H_COUNT"].(int64)
+		if H_COUNT == 0 {
+			return errors.New("Хосты не были загружены")
+		}
+		U_COUNT := (*res2)[0]["U_COUNT"].(int64)
+		if U_COUNT == 0 {
+			return errors.New("Логины не были загружены")
+		}
+		P_COUNT := (*res2)[0]["P_COUNT"].(int64)
+		if P_COUNT == 0 {
+			return errors.New("Пароли не были загружены")
+		}
+	}
+
 	return nil
 }
 
-func (r *SESSRepositoryLayer) GetSessionStatistic(sID string) (*lib_db.DBResult, *lib_db.DBResult, error) {
+func (r *SESSRepositoryLayer) GetSessionStatistic(sID string) (*lib_db.DBResult, *lib_db.DBResult, *string, *string, error) {
 	id, err := strconv.ParseInt(sID, 10, 64)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
 	res, err := r.db.QueryRow(lib_db.TxRead, QGetModuleType, id)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	mtype := (*res)[0]["type"].(string)
 
-	var res1 *lib_db.DBResult
+	var result *lib_db.DBResult
 	if mtype == "MT1" {
-		res1, err = r.db.QueryRow(lib_db.TxRead, QGetSessionStatistic, id, id)
+		result, err = r.db.QueryRow(lib_db.TxRead, QGetSessionStatistic, id, id)
 	} else {
-		res1, err = r.db.QueryRow(lib_db.TxRead, QGetSessionStatisticProtocol, id, id)
+		result, err = r.db.QueryRow(lib_db.TxRead, QGetSessionStatisticProtocol, id, id)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	var res2 *lib_db.DBResult
+	var statistic *lib_db.DBResult
 	if mtype == "MT1" {
-		res2, err = r.db.QueryRow(lib_db.TxRead, QGetPercent, id)
+		statistic, err = r.db.QueryRow(lib_db.TxRead, QGetPercent, id, id)
 	} else {
-		res2, err = r.db.QueryRow(lib_db.TxRead, QGetPercentProtocol, id, id)
+		statistic, err = r.db.QueryRow(lib_db.TxRead, QGetPercentProtocol, id, id)
 	}
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	(*res2)[0]["proxycount"] = r.p.GetProxyCount(id)
-	return res1, res2, nil
+	(*statistic)[0]["proxycount"] = r.p.GetProxyCount(id)
+
+	status := (*statistic)[0]["STATUS_NAME"].(string)
+	delete((*statistic)[0], "STATUS_NAME")
+
+	finish_time := "Не закончено"
+	if (*statistic)[0]["finish_time"] != nil {
+		finish_time = (*statistic)[0]["finish_time"].(time.Time).Format("2006-01-02 15:04:05")
+	}
+	delete((*statistic)[0], "finish_time")
+
+	return result, statistic, &status, &finish_time, nil
 }
 
 func (r *SESSRepositoryLayer) GetResults(sId string, pId string, eCount string, params string) (error, int, *lib_db.DBResult) {
@@ -396,7 +603,7 @@ func (r *SESSRepositoryLayer) GetResults(sId string, pId string, eCount string, 
 			pagesCount = 1
 		}
 
-		res, err = r.db.QueryRow(lib_db.TxRead, strings.Replace(QGetSessionResults, "-_-", utility.ChangeParam(params), -1), session_id, nine, session_id, entries_count, (page_id-1)*entries_count)
+		res, err = r.db.QueryRow(lib_db.TxRead, strings.Replace(QGetSessionResults, "-_-", utility.ChangeParam(params), -1), session_id, nine, entries_count, (page_id-1)*entries_count)
 		if err != nil {
 			return err, 0, nil
 		}
@@ -588,7 +795,7 @@ func (r *SESSRepositoryLayer) DownloadUniversal(sID string, sFormat string, para
 				rowObj.AddCell().Value = item["password"].(string)
 				rowObj.AddCell().Value = item["log"].(string)
 			}
-			
+
 			var buffer bytes.Buffer
 			err = excel.Write(&buffer)
 			files = append(files, utility.File{

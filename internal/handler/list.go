@@ -1,7 +1,7 @@
 package handler
 
 import (
-	"encoding/json"
+	"time"
 
 	"api.brutecore/internal/repository"
 	"api.brutecore/libs/lib_db"
@@ -58,22 +58,14 @@ func (ll *LISTLayer) DeleteComboList(c *fiber.Ctx) error {
 }
 
 func (ll *LISTLayer) UploadComboList(c *fiber.Ctx) error {
-	data := new(repository.MComboListData)
-	if err := json.Unmarshal(c.Body(), data); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false, "msg_txt": err.Error(),
-		})
-	}
-
-	err := ll.repo.UploadComboList(data)
-	if err != nil {
+	if id, err := ll.repo.UploadComboListFormData(c); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false, "msg_txt": err.Error(),
 		})
 	} else {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"success": true, "id": data.ID,
-			"create_time": data.CreateTime.Format("2006-01-02T15:04:05Z"),
+			"success": true, "id": id,
+			"create_time": time.Now().Format("2006-01-02T15:04:05Z"),
 		})
 	}
 }

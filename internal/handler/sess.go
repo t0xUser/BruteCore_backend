@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	eg "api.brutecore/internal/engine"
 
@@ -117,15 +116,7 @@ func (sl *SESSLayer) AlterSession(c *fiber.Ctx) error {
 }
 
 func (sl *SESSLayer) UploadProxy(c *fiber.Ctx) error {
-	data := new(repository.MUploadProxy)
-	if err := json.Unmarshal(c.Body(), data); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false, "msg_txt": "Invalid JSON data",
-		})
-	}
-
-	err := sl.repo.UploadProxy(data)
-	if err != nil {
+	if err := sl.repo.UploadProxyFormData(c); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false, "msg_txt": err.Error(),
 		})
@@ -136,22 +127,25 @@ func (sl *SESSLayer) UploadProxy(c *fiber.Ctx) error {
 	}
 }
 
+func (sl *SESSLayer) UploadComboList(c *fiber.Ctx) error {
+	if err := sl.repo.UploadComboListFormData(c); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false, "msg_txt": err.Error(),
+		})
+	} else {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"success": true, "msg_txt": "Комбо-лист был загружен",
+		})
+	}
+}
+
 func (sl *SESSLayer) GetStatistic(c *fiber.Ctx) error {
-	result, statistic, err := sl.repo.GetSessionStatistic(c.Query("id"))
+	result, statistic, status, finish_time, err := sl.repo.GetSessionStatistic(c.Query("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"success": false, "msg_txt": err.Error(),
 		})
 	} else {
-		status := (*statistic)[0]["STATUS_NAME"].(string)
-		delete((*statistic)[0], "STATUS_NAME")
-
-		finish_time := "Не закончено"
-		if (*statistic)[0]["FINISH_TIME"] != nil {
-			finish_time = (*statistic)[0]["FINISH_TIME"].(time.Time).Format("2006-01-02 15:04:05")
-		}
-		delete((*statistic)[0], "FINISH_TIME")
-
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"success": true, "result": result, "statistic": (*statistic)[0],
 			"status": status, "finish_time": finish_time,

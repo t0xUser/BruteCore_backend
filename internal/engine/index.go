@@ -78,6 +78,10 @@ func (p *Pulling) removeInstance(instanceToRemove *Session) {
 	}
 }
 
+func (p *Pulling) NullateError(id int64) {
+	p.db.Exec(lib_db.TxWrite, "UPDATE SESSION SET ERRORS = NULL WHERE ID = $1;", id)
+}
+
 func (p *Pulling) writeError(err error, id int64) {
 	p.db.Exec(lib_db.TxWrite, QSetSessionError, err.Error(), id)
 }
@@ -95,7 +99,8 @@ func (p *Pulling) Iteration() {
 		ID := i["ID"].(int64)
 
 		if inst = p.getInstanceByID(ID); inst == nil {
-			if inst, err = NewInstance(i, p.db); err != nil {
+			p.NullateError(ID)
+			if inst, err = NewSession(i, p.db); err != nil {
 				p.writeError(err, ID)
 				continue
 			}

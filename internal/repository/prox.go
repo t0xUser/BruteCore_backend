@@ -32,7 +32,6 @@ type MProxyPreset struct {
 	CreateTime time.Time    `json:"create_time"`
 	AutoUpdate bool         `json:"use_update"`
 	Interval   int64        `json:"interval"`
-	TimeOut    int64        `json:"timeout"`
 	LinesCount int64        `json:"lines_count"`
 	Links      *[]ProxyLink `json:"links"`
 }
@@ -159,7 +158,7 @@ func (r *PROXRepositoryLayer) WriteProxyAndLinks(resp *MProxyPreset) error {
 	}
 
 	trueTx := tx.(*sql.Tx)
-	res, err := trueTx.Exec(QInsertProxy, resp.Name, resp.Interval, resp.TimeOut, utility.BoolToInt(resp.AutoUpdate))
+	res, err := trueTx.Exec(QInsertProxy, resp.Name, resp.Interval, utility.BoolToInt(resp.AutoUpdate))
 	if err != nil {
 		trueTx.Rollback()
 		return err
@@ -184,10 +183,6 @@ func (r *PROXRepositoryLayer) WriteProxyAndLinks(resp *MProxyPreset) error {
 func (r *PROXRepositoryLayer) UploadProxyPreset(resp *MProxyPreset) (int64, error) {
 	if resp.Name == "" {
 		return 0, errors.New("Укажите наименование пресета")
-	}
-
-	if resp.TimeOut == 0 {
-		return 0, errors.New("Укажите таймаут")
 	}
 
 	if resp.AutoUpdate == true && resp.Interval < 10 {

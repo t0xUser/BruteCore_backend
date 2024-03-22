@@ -15,6 +15,7 @@ import (
 
 	eg "api.brutecore/internal/engine"
 	handler "api.brutecore/internal/handler"
+	migr "api.brutecore/internal/migrations"
 	server "api.brutecore/internal/server"
 )
 
@@ -25,7 +26,7 @@ const (
 	| |_) | _ __  _   _ | |_   ___ | |       ___   _ __   ___
 	|  _ < | '__|| | | || __| / _ \| |      / _ \ | '__| / _ \
 	| |_) || |   | |_| || |_ |  __/| |____ | (_) || |   |  __/
-	|____/ |_|    \__,_| \__| \___| \_____| \___/ |_|    \___| v1.0.0.1
+	|____/ |_|    \__,_| \__| \___| \_____| \___/ |_|    \___| v1.0.0.3
 
 	===================================================================
 	`
@@ -61,6 +62,11 @@ func main() {
 	}
 	defer db.Close()
 
+	/*--- Проверка БД на обновления ---*/
+	if err := migr.CheckMigrations(db); err != nil {
+		log.Fatalf("Database Migration error: %v", err)
+	}
+
 	/*--- Инициализация JWT класса ---*/
 	jwt, err := lib_jwt.New(lib_jwt.MapStrToMethod(conf.Jwt.Method), []byte(conf.Jwt.Key), conf.Jwt.AccessTime, conf.Jwt.RefreshTime)
 	if err != nil {
@@ -77,7 +83,7 @@ func main() {
 	app.SetMiddleware()
 	app.SetHandlers(handler.New(conf, db, jwt, pull))
 
-	go openBrowser(conf.Http.Port)
+	//go openBrowser(conf.Http.Port)
 	log.Printf(`Server initalized on port "%s" with group "%s"`, conf.Http.Port, conf.Http.Group)
 	if err = app.Listen(); err != nil {
 		log.Fatalf("Error initalizing the server: %v", err)
